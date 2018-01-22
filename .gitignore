@@ -1,0 +1,7 @@
+/.idea/
+/target/
+/cds-datasource-starter.iml
+*.xml.versionsBackup
+/cds-datasource-starter.ipr
+/cds-datasource-starter.iws
+/cds-starter-datasource.iml
