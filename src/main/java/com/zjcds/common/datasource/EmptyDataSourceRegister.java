@@ -52,7 +52,7 @@ public class EmptyDataSourceRegister implements ImportBeanDefinitionRegistrar, E
         else{
             primaryDataSource = StringUtils.trim(environment.getProperty(PrimaryDataSourceProperty));
             Assert.hasText(primaryDataSource,"配置了多个数据源，但是未指定主数据源配置("+PrimaryDataSourceProperty+")!");
-            Assert.isTrue(!ArrayUtils.contains(dataSourceArray,primaryDataSource),"配置了多个数据源，但是指定的主数据源名称未匹配！");
+            Assert.isTrue(ArrayUtils.contains(dataSourceArray,primaryDataSource),"配置了多个数据源，但是指定的主数据源名称未匹配！");
         }
         return primaryDataSource;
     }

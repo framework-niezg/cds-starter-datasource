@@ -1,4 +1,4 @@
-package com.zjcds.common.datasource;
+package com.zjcds.common.datasource.properties;
 
 import org.springframework.boot.context.properties.ConfigurationProperties;
 

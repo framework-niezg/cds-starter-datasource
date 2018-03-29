@@ -1,20 +1,20 @@
 package com.zjcds.common.datasource;
 
-import com.alibaba.druid.pool.DruidDataSource;
 import com.alibaba.druid.support.http.StatViewServlet;
 import com.alibaba.druid.support.http.WebStatFilter;
+import com.zjcds.common.datasource.properties.DruidDataSourceProperties;
+import com.zjcds.common.datasource.properties.DruidStatProperties;
+import com.zjcds.common.datasource.properties.HikariDataSourceProperties;
+import com.zjcds.common.datasource.properties.MultipartDataSourceProperties;
 import org.apache.commons.lang3.StringUtils;
-import org.dozer.DozerBeanMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.BeansException;
+import org.springframework.beans.factory.InitializingBean;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.config.BeanPostProcessor;
-import org.springframework.boot.autoconfigure.AutoConfigureAfter;
 import org.springframework.boot.autoconfigure.AutoConfigureBefore;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnClass;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnWebApplication;
 import org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -31,11 +31,13 @@ import org.springframework.core.PriorityOrdered;
 import org.springframework.util.Assert;
 
 import javax.sql.DataSource;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 
 /**
  * 数据源自动配置
- * 1、druid数据源自动配置
+ * 1、druid及hirika数据源自动配置
  * 2、多数据源支持
  * created date：2016-12-08
  * @author niezhegang
@@ -52,33 +54,23 @@ public class DsAutoConfiguration {
     /**启用多个数据源时指定的主数据源*/
     private final static String PrimaryDataSourceProperty = "com.zjcds.dataSources.primary";
 
+    private static final Logger LOGGER = LoggerFactory.getLogger(DsAutoConfiguration.class);
+
     /**
-     * The type Druid data source configuration.
-     * niezhegang
+     * 多数据源创建器
      */
     @Configuration
-    @ConditionalOnClass(DruidDataSource.class)
-    public static class DruidDataSourceConfiguration {
+    public static class MultiDataSourceCreators implements InitializingBean{
         /**数据源属性配置*/
         @Autowired
         private MultipartDataSourceProperties dataSourceProperties;
 
-        private DozerBeanMapper mapper = new DozerBeanMapper();
+        private List<DataSourceBeanCreator> dataSourceBeanCreators = new ArrayList<>();
 
-        private Logger logger = LoggerFactory.getLogger(this.getClass());
-
-        /**
-         * check data source config existence
-         * @param dataSourceName the data source name
-         * @return the boolean
-         */
-        public boolean existDataSourceConfig(String dataSourceName){
-            boolean bRet = false;
-            Map<String, MultipartDataSourceProperties.DruidDataSourceProperties> druidDataSourceProperties = dataSourceProperties.getDruids();
-            if(druidDataSourceProperties != null && druidDataSourceProperties.get(dataSourceName) != null){
-                bRet = true;
-            }
-            return bRet;
+        @Override
+        public void afterPropertiesSet() throws Exception {
+            dataSourceBeanCreators.add(new DruidDataSourceBeanCreator());
+            dataSourceBeanCreators.add(new HikariDataSourceBeanCreator());
         }
 
         /**
@@ -88,18 +80,23 @@ public class DsAutoConfiguration {
          * @return the data source
          * @throws BeansException the beans exception
          */
-        public DataSource createDataSource(GenericApplicationContext applicationContext,String beanName) throws BeansException {
+        public DataSource createDataSource(GenericApplicationContext applicationContext,String beanName) {
             Assert.notNull(dataSourceProperties,"dataSourceProperties cannot be null");
-            DataSource ds = new DruidDataSource();
-            MultipartDataSourceProperties.DruidDataSourceProperties druidDataSourceProperties = dataSourceProperties.getDruids().get(beanName);
-            Assert.notNull(druidDataSourceProperties,beanName+" druidConfig not found!");
-            //修改默认druidDataSource的name为beanname
-            if(StringUtils.isBlank(druidDataSourceProperties.getName())) {
-                druidDataSourceProperties.setName(beanName);
+            String dataSourceName = beanName;
+            DataSourceBeanCreator dataSourceBeanCreator = null;
+            for(DataSourceBeanCreator ele : dataSourceBeanCreators){
+                if(ele.matchCreator(dataSourceProperties,dataSourceName)){
+                    dataSourceBeanCreator = ele;
+                    break;
+                }
             }
-            mapper.map(druidDataSourceProperties,ds);
-            logger.debug("数据源{}的属性配置完成！",beanName);
-            return ds;
+            if(dataSourceBeanCreator == null){
+                throw new IllegalArgumentException("未找到数据源"+dataSourceName+"的配置项");
+            }
+            else {
+                return dataSourceBeanCreator.createDataSource(dataSourceProperties,applicationContext,dataSourceName);
+            }
+
         }
     }
 
@@ -129,12 +126,8 @@ public class DsAutoConfiguration {
             if(applicationContext instanceof GenericApplicationContext){
                 /**处理逻辑*/
                 if(bean instanceof EmptyDataSource){
-                    DruidDataSourceConfiguration druidDataSourceConfiguration = applicationContext.getBean(DruidDataSourceConfiguration.class);
-                    if(druidDataSourceConfiguration != null){
-                        if(druidDataSourceConfiguration.existDataSourceConfig(beanName)){
-                            retObj = druidDataSourceConfiguration.createDataSource((GenericApplicationContext)applicationContext,beanName);
-                        }
-                    }
+                    MultiDataSourceCreators multiDataSourceCreators = applicationContext.getBean(MultiDataSourceCreators.class);
+                   retObj = multiDataSourceCreators.createDataSource((GenericApplicationContext)applicationContext,beanName);
                 }
             }
             return retObj;
@@ -150,6 +143,89 @@ public class DsAutoConfiguration {
             this.applicationContext = applicationContext;
         }
     }
+
+    public static interface DataSourceBeanCreator{
+
+        /**
+         * 查看是否匹配创建对象
+         * @param dataSourceProperties
+         * @param dataSourceName
+         * @return
+         */
+        public boolean matchCreator(MultipartDataSourceProperties dataSourceProperties,String dataSourceName);
+
+        /**
+         * 创建类型对应数据源
+         * @param applicationContext
+         * @param dataSourceName
+         * @return
+         */
+        public DataSource createDataSource(MultipartDataSourceProperties dataSourceProperties,GenericApplicationContext applicationContext,String dataSourceName);
+
+    }
+
+    public static class DruidDataSourceBeanCreator implements DataSourceBeanCreator {
+
+        @Override
+        public boolean matchCreator(MultipartDataSourceProperties dataSourceProperties, String dataSourceName) {
+            boolean bRet = false;
+            if(dataSourceProperties != null) {
+                Map<String, DruidDataSourceProperties> druidDataSourceProperties = dataSourceProperties.getDruids();
+                if (druidDataSourceProperties != null && druidDataSourceProperties.get(dataSourceName) != null) {
+                    bRet = true;
+                }
+            }
+            return bRet;
+        }
+
+        @Override
+        public DataSource createDataSource(MultipartDataSourceProperties dataSourceProperties,GenericApplicationContext applicationContext, String dataSourceName) {
+            Assert.notNull(dataSourceProperties,"dataSourceProperties cannot be null");
+            DruidDataSourceProperties druidDataSourceProperties = dataSourceProperties.getDruids().get(dataSourceName);
+            Assert.notNull(druidDataSourceProperties, dataSourceName +" druidConfig not found!");
+            //修改默认druidDataSource的name为beanname
+            if(StringUtils.isBlank(druidDataSourceProperties.getName())) {
+                druidDataSourceProperties.setName(dataSourceName);
+            }
+            DataSource ds = DataSourceBuilder.newDruidBuilder()
+                    .dataSourceProperties(druidDataSourceProperties)
+                    .build();
+            LOGGER.info("druid数据源{}的属性配置完成！", dataSourceName);
+            return ds;
+        }
+    }
+
+    public static class HikariDataSourceBeanCreator implements DataSourceBeanCreator {
+        @Override
+        public boolean matchCreator(MultipartDataSourceProperties dataSourceProperties, String dataSourceName) {
+            boolean bRet = false;
+            if(dataSourceProperties != null) {
+                Map<String, HikariDataSourceProperties> hikariDataSourceProperties = dataSourceProperties.getHikaris();
+                if (hikariDataSourceProperties != null && hikariDataSourceProperties.get(dataSourceName) != null) {
+                    bRet = true;
+                }
+            }
+            return bRet;
+        }
+
+        @Override
+        public DataSource createDataSource(MultipartDataSourceProperties dataSourceProperties,GenericApplicationContext applicationContext, String dataSourceName) {
+            Assert.notNull(dataSourceProperties,"dataSourceProperties cannot be null");
+            HikariDataSourceProperties hikariDataSourceProperties = dataSourceProperties.getHikaris().get(dataSourceName);
+            Assert.notNull(hikariDataSourceProperties, dataSourceName +" hikariDataSourceConfig not found!");
+            //修改默认druidDataSource的name为beanname
+            if(StringUtils.isBlank(hikariDataSourceProperties.getPoolName())) {
+                hikariDataSourceProperties.setPoolName(dataSourceName);
+            }
+            DataSource ds = DataSourceBuilder.newHikariBuilder()
+                    .hikariDataSourceProperties(hikariDataSourceProperties)
+                    .build();
+            LOGGER.info("hikari数据源{}的属性配置完成！", dataSourceName);
+            return ds;
+        }
+    }
+
+
 
     @Configuration
     @ConditionalOnWebApplication
